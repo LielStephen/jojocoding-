@@ -1,0 +1,7 @@
+{
+  "name": "Chrome Extension Prompt",
+  "description": "Provides a comprehensive prompt for building an AI-powered Chrome extension coding assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
