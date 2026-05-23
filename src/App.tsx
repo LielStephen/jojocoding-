@@ -3,14 +3,18 @@ import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Check,
+  Clipboard,
+  Columns3,
   KeyRound,
   LoaderCircle,
+  MoveVertical,
+  PenLine,
   ScanSearch,
   Sparkles,
   WandSparkles,
 } from 'lucide-react';
 
-type Mode = 'explain' | 'review' | 'improve';
+type Mode = 'explain' | 'review' | 'improve' | 'optimize';
 
 type ScanPayload = {
   code: string;
@@ -32,9 +36,27 @@ type AnalysisResult = {
   risks: string[];
   improvements: string[];
   nextStep: string;
+  optimizedCode: string;
+};
+
+type PopupSize = {
+  width: number;
+  height: number;
 };
 
 const MODEL = 'gemini-2.5-flash';
+const DEFAULT_POPUP_SIZE: PopupSize = {
+  width: 420,
+  height: 640,
+};
+const POPUP_WIDTH_RANGE = {
+  min: 360,
+  max: 460,
+};
+const POPUP_HEIGHT_RANGE = {
+  min: 560,
+  max: 760,
+};
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -48,6 +70,7 @@ const RESPONSE_SCHEMA = {
     'risks',
     'improvements',
     'nextStep',
+    'optimizedCode',
   ],
   properties: {
     summary: { type: 'string' },
@@ -87,6 +110,7 @@ const RESPONSE_SCHEMA = {
       maxItems: 5,
     },
     nextStep: { type: 'string' },
+    optimizedCode: { type: 'string' },
   },
 } as const;
 
@@ -112,6 +136,12 @@ const MODE_COPY: Record<
     label: 'Improve',
     prompt: 'Suggest the highest-value improvements for this code.',
     icon: WandSparkles,
+  },
+  optimize: {
+    label: 'Optimize',
+    prompt:
+      'Rewrite this code to be cleaner, more efficient, and more maintainable. Return production-ready code with natural naming and human-style structure, not generic AI-sounding text.',
+    icon: PenLine,
   },
 };
 
@@ -162,6 +192,33 @@ function scanActiveTab() {
   });
 }
 
+function pasteIntoActiveEditor(code: string) {
+  return new Promise<void>((resolve, reject) => {
+    getActiveTab()
+      .then((tab) => {
+        chrome.tabs.sendMessage(tab.id!, { type: 'CODE_STAND_PASTE', code }, (response) => {
+          const error = chrome.runtime.lastError;
+          if (error) {
+            reject(
+              new Error(
+                'Could not paste into this tab. Click inside the page editor first, then try again.',
+              ),
+            );
+            return;
+          }
+
+          if (response?.error) {
+            reject(new Error(response.error));
+            return;
+          }
+
+          resolve();
+        });
+      })
+      .catch(reject);
+  });
+}
+
 function loadApiKey() {
   return new Promise<string>((resolve) => {
     chrome.storage.local.get(['geminiApiKey'], (result) => {
@@ -173,6 +230,24 @@ function loadApiKey() {
 function saveApiKey(apiKey: string) {
   return new Promise<void>((resolve) => {
     chrome.storage.local.set({ geminiApiKey: apiKey }, () => resolve());
+  });
+}
+
+function loadPopupSize() {
+  return new Promise<PopupSize>((resolve) => {
+    chrome.storage.local.get(['popupSize'], (result) => {
+      const savedSize = result.popupSize as Partial<PopupSize> | undefined;
+      resolve({
+        width: savedSize?.width ?? DEFAULT_POPUP_SIZE.width,
+        height: savedSize?.height ?? DEFAULT_POPUP_SIZE.height,
+      });
+    });
+  });
+}
+
+function savePopupSize(size: PopupSize) {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.set({ popupSize: size }, () => resolve());
   });
 }
 
@@ -189,10 +264,28 @@ export default function App() {
   const [isSavingKey, setIsSavingKey] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isPasting, setIsPasting] = useState(false);
+  const [popupSize, setPopupSize] = useState<PopupSize>(DEFAULT_POPUP_SIZE);
 
   useEffect(() => {
     loadApiKey().then(setApiKey);
+    loadPopupSize().then(setPopupSize);
   }, []);
+
+  useEffect(() => {
+    savePopupSize(popupSize);
+
+    const width = Math.min(Math.max(popupSize.width, POPUP_WIDTH_RANGE.min), POPUP_WIDTH_RANGE.max);
+    const height = Math.min(
+      Math.max(popupSize.height, POPUP_HEIGHT_RANGE.min),
+      POPUP_HEIGHT_RANGE.max,
+    );
+
+    document.documentElement.style.setProperty('--popup-width', `${width}px`);
+    document.documentElement.style.setProperty('--popup-height', `${height}px`);
+    document.body.style.width = `${width}px`;
+    document.body.style.minHeight = `${height}px`;
+  }, [popupSize]);
 
   const changeMode = (nextMode: Mode) => {
     setMode(nextMode);
@@ -244,6 +337,10 @@ export default function App() {
         'You are a precise senior software engineer.',
         'Use only the supplied code and request.',
         'Be concise, concrete, and specific.',
+        'If mode is optimize, return a full rewritten code block in optimizedCode.',
+        'If mode is not optimize, optimizedCode must be an empty string.',
+        'Write naturally. Prefer practical naming, grounded comments, and code that reads like a skilled human wrote it.',
+        'Do not use AI disclaimers or self-reference.',
         `Mode: ${mode}`,
         `Request: ${question.trim() || MODE_COPY[mode].prompt}`,
         pageUrl ? `Source URL: ${pageUrl}` : '',
@@ -277,6 +374,52 @@ export default function App() {
     }
   };
 
+  const updatePopupSize = (dimension: keyof PopupSize, value: number) => {
+    setPopupSize((currentSize) => ({
+      ...currentSize,
+      [dimension]: value,
+    }));
+  };
+
+  const resetPopupSize = () => {
+    setPopupSize(DEFAULT_POPUP_SIZE);
+    setStatus('Popup size reset to the default extension layout.');
+  };
+
+  const handleCopyOptimizedCode = async () => {
+    if (!result?.optimizedCode.trim()) {
+      setError('Run Optimize mode first to get rewritten code.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(result.optimizedCode);
+      setError('');
+      setStatus('Optimized code copied to the clipboard.');
+    } catch {
+      setError('Copy failed. Your browser blocked clipboard access.');
+    }
+  };
+
+  const handlePasteOptimizedCode = async () => {
+    if (!result?.optimizedCode.trim()) {
+      setError('Run Optimize mode first to get rewritten code.');
+      return;
+    }
+
+    setIsPasting(true);
+    setError('');
+
+    try {
+      await pasteIntoActiveEditor(result.optimizedCode);
+      setStatus('Optimized code pasted into the page editor.');
+    } catch (pasteError) {
+      setError(pasteError instanceof Error ? pasteError.message : 'Paste failed.');
+    } finally {
+      setIsPasting(false);
+    }
+  };
+
   return (
     <div className="popup-shell">
       <div className="popup-panel">
@@ -305,6 +448,48 @@ export default function App() {
               {isSavingKey ? '...' : 'Save'}
             </button>
           </div>
+        </section>
+
+        <section className="section-block">
+          <div className="section-title-row">
+            <span className="section-label">Popup size</span>
+            <Columns3 className="h-4 w-4" />
+          </div>
+          <div className="size-grid">
+            <label className="size-control">
+              <span className="size-label">Width</span>
+              <div className="slider-row">
+                <input
+                  className="size-slider"
+                  max={POPUP_WIDTH_RANGE.max}
+                  min={POPUP_WIDTH_RANGE.min}
+                  onChange={(event) => updatePopupSize('width', Number(event.target.value))}
+                  type="range"
+                  value={popupSize.width}
+                />
+                <span className="size-value">{popupSize.width}px</span>
+              </div>
+            </label>
+            <label className="size-control">
+              <span className="size-label">Height</span>
+              <div className="slider-row">
+                <input
+                  className="size-slider"
+                  max={POPUP_HEIGHT_RANGE.max}
+                  min={POPUP_HEIGHT_RANGE.min}
+                  onChange={(event) => updatePopupSize('height', Number(event.target.value))}
+                  type="range"
+                  value={popupSize.height}
+                />
+                <span className="size-value">{popupSize.height}px</span>
+              </div>
+            </label>
+          </div>
+          <p className="size-note">Safe Chrome popup range. Wider values are clamped to avoid layout clipping.</p>
+          <button className="mini-button size-reset-button" onClick={resetPopupSize} type="button">
+            <MoveVertical className="h-4 w-4" />
+            Reset size
+          </button>
         </section>
 
         <section className="section-block">
@@ -438,6 +623,37 @@ export default function App() {
                 ))}
               </ul>
             </article>
+
+            {result.optimizedCode.trim() ? (
+              <article className="result-card optimized-card">
+                <div className="section-title-row">
+                  <span className="section-label">Optimized code</span>
+                  <PenLine className="h-4 w-4" />
+                </div>
+                <pre className="snippet-pre optimized-pre">
+                  <code>{result.optimizedCode}</code>
+                </pre>
+                <div className="result-action-row">
+                  <button className="mini-button action-mini-button" onClick={handleCopyOptimizedCode} type="button">
+                    <Clipboard className="h-4 w-4" />
+                    Copy code
+                  </button>
+                  <button className="mini-button action-mini-button" onClick={handlePasteOptimizedCode} type="button">
+                    {isPasting ? (
+                      <>
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        Pasting
+                      </>
+                    ) : (
+                      <>
+                        <PenLine className="h-4 w-4" />
+                        Paste in editor
+                      </>
+                    )}
+                  </button>
+                </div>
+              </article>
+            ) : null}
 
             <article className="result-card next-step-card">
               <div className="section-title-row">
