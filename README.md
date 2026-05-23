@@ -14,8 +14,10 @@ Code Stand is a Chrome extension popup that scans code from the current tab and 
 - `Explain` mode for understanding code flow
 - `Review` mode for bugs, edge cases, and risky logic
 - `Improve` mode for cleanup and refactor suggestions
+- `Optimize` mode for a rewritten, cleaner code version
 - Page scan for code blocks on the active tab
 - Manual paste fallback if the page scan is not enough
+- Copy or paste optimized code back into the active page editor
 
 ## Project structure
 
@@ -79,6 +81,11 @@ After code changes:
 5. Choose `Explain`, `Review`, or `Improve`
 6. Click `Analyze code`
 
+If you use `Optimize`, the popup also shows:
+
+- `Copy code` to move the rewritten version to your clipboard
+- `Paste in editor` to insert the rewritten code into the active page editor
+
 If the page scan does not capture the right code, paste code manually into the popup and analyze it from there.
 
 ## Permissions
@@ -91,3 +98,4 @@ If the page scan does not capture the right code, paste code manually into the p
 - The API key is stored in Chrome extension local storage on your machine.
 - Some browser pages cannot be scanned, including many Chrome internal pages such as `chrome://extensions`.
 - The extension prefers selected text first. If you highlight a specific code snippet before opening the popup, that selection is used.
+- For paste-back to work reliably, click inside the target editor on the page before opening the popup.
