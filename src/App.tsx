@@ -1,194 +1,385 @@
-import { useState, useEffect } from 'react';
-import { Zap, Code2, Scan, Activity, ArrowRight, Skull, FileCode } from 'lucide-react';
+import type { FormEvent } from 'react';
+import { useState } from 'react';
+import {
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  ClipboardList,
+  LoaderCircle,
+  SearchCode,
+  Sparkles,
+  WandSparkles,
+} from 'lucide-react';
 
-const MOCK_CODE = `function debounce(func, wait) {
-  let timeout;
-  return function(...args) {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
-      func.apply(this, args);
-    }, wait);
+type Mode = 'explain' | 'review' | 'improve';
+
+type AnalysisResult = {
+  summary: string;
+  intent: string;
+  confidence: 'high' | 'medium' | 'low';
+  whatItDoes: string[];
+  importantLines: Array<{
+    label: string;
+    snippet: string;
+    why: string;
+  }>;
+  risks: string[];
+  improvements: string[];
+  nextStep: string;
+};
+
+const SAMPLE_CODE = `export async function fetchUserProfile(userId) {
+  const response = await fetch("/api/users/" + userId);
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const user = await response.json();
+  return {
+    id: user.id,
+    name: user.name.trim(),
+    lastLogin: new Date(user.last_login).toLocaleDateString(),
   };
 }`;
 
+const MODE_COPY: Record<
+  Mode,
+  {
+    label: string;
+    icon: typeof Sparkles;
+    description: string;
+    prompt: string;
+  }
+> = {
+  explain: {
+    label: 'Explain',
+    icon: Sparkles,
+    description: 'Break down what the code does in plain language.',
+    prompt: 'Explain the intent and flow clearly. Call out anything non-obvious.',
+  },
+  review: {
+    label: 'Review',
+    icon: SearchCode,
+    description: 'Focus on bugs, edge cases, and risky assumptions.',
+    prompt: 'Review this code like a senior engineer. Be strict and specific.',
+  },
+  improve: {
+    label: 'Improve',
+    icon: WandSparkles,
+    description: 'Suggest practical changes to make the code cleaner or stronger.',
+    prompt: 'Propose precise improvements with the highest impact first.',
+  },
+};
+
 export default function App() {
-  const [appState, setAppState] = useState<'IDLE' | 'SCANNING' | 'FOUND' | 'ANALYZING' | 'DONE'>('IDLE');
-  const [typedExplanation, setTypedExplanation] = useState('');
-  
-  const fullExplanation = `[ STAND ABILITY ]
-The "Debounce" Stand delays a function's execution until a set amount of time (wait) has passed since it was last called.
+  const [mode, setMode] = useState<Mode>('explain');
+  const [question, setQuestion] = useState(MODE_COPY.explain.prompt);
+  const [code, setCode] = useState('');
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-[ BATTLE BREAKDOWN ]
-1. "let timeout;" -> Creates a memory void to capture incoming attacks (function calls).
-2. "clearTimeout(timeout);" -> If a new attack comes in before the timer finishes, it ERASES the previous timer! MUDA MUDA MUDA!
-3. "timeout = setTimeout(...)" -> Starts a new countdown. Only when the barrage STOPS and the timer hits zero does the function finally strike!`;
+  const handleModeChange = (nextMode: Mode) => {
+    setMode(nextMode);
+    setQuestion(MODE_COPY[nextMode].prompt);
+  };
 
-  useEffect(() => {
-    if (appState === 'SCANNING') {
-      const timer = setTimeout(() => setAppState('FOUND'), 1500);
-      return () => clearTimeout(timer);
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!code.trim()) {
+      setError('Paste some code before running the analysis.');
+      return;
     }
-    
-    if (appState === 'ANALYZING') {
-      let currentLength = 0;
-      const typeInterval = setInterval(() => {
-        currentLength += 3;
-        if (currentLength <= fullExplanation.length) {
-          setTypedExplanation(fullExplanation.substring(0, currentLength));
-        } else {
-          clearInterval(typeInterval);
-          setAppState('DONE');
-        }
-      }, 20); // Fast dramatic typing
-      return () => clearInterval(typeInterval);
-    }
-  }, [appState]);
 
-  const handleAction = () => {
-    if (appState === 'IDLE') setAppState('SCANNING');
-    if (appState === 'FOUND') setAppState('ANALYZING');
-    if (appState === 'DONE') {
-      setAppState('IDLE');
-      setTypedExplanation('');
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode,
+          question,
+          code,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? 'The analysis request failed.');
+      }
+
+      setResult(payload.analysis as AnalysisResult);
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Something went wrong while contacting the analyzer.';
+
+      setError(message);
+      setResult(null);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-neutral-900 flex flex-col md:flex-row items-center justify-center p-4 gap-12 font-sans overflow-hidden relative">
-      
-      {/* Background Decor */}
-      <div className="fixed inset-0 manga-bg opacity-20 pointer-events-none" />
-      <div className="fixed -left-10 text-[180px] font-black text-purple-900/40 pointer-events-none select-none tracking-tighter" style={{ writingMode: 'vertical-rl' }}>
-        MENACING
-      </div>
+    <div className="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
+      <div className="poster-noise pointer-events-none fixed inset-0 opacity-80" />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(235,94,40,0.18),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(56,82,255,0.16),_transparent_30%)]" />
 
-      {/* 
-        MOCK BROWSER CONTEXT (Left Side) - Simulating what the user is looking at.
-        This provides context for the chrome extension mock.
-      */}
-      <div className="hidden md:flex flex-col w-[500px] border-4 border-neutral-700 bg-neutral-950 rounded-lg shadow-2xl relative z-10 transition-transform duration-500 hover:rotate-1">
-        <div className="h-10 bg-neutral-800 flex items-center px-4 gap-2 border-b-4 border-neutral-700">
-          <div className="w-3 h-3 bg-red-500 rounded-full" />
-          <div className="w-3 h-3 bg-yellow-500 rounded-full" />
-          <div className="w-3 h-3 bg-green-500 rounded-full" />
-          <div className="flex-1 ml-4 bg-neutral-900 rounded-sm h-6 px-3 flex items-center text-xs text-neutral-500 font-mono">
-             github.com/dio/world-repo
-          </div>
-        </div>
-        <div className="p-8 text-neutral-300 font-mono text-sm leading-relaxed">
-          <h2 className="text-white text-xl font-bold mb-4 font-sans border-b border-neutral-700 pb-2">utils.js</h2>
-          <div className={`p-4 rounded transition-all duration-500 ${appState !== 'IDLE' ? 'ring-4 ring-pink-500 bg-pink-500/10' : ''}`}>
-            <pre className="text-emerald-400">
-              <code>{MOCK_CODE}</code>
-            </pre>
-          </div>
-          <div className="mt-8 opacity-50">
-            {`// more code down here...
-export const throttle = (fn) => {...};
-export const memoize = (fn) => {...};`}
-          </div>
-        </div>
-        {appState !== 'IDLE' && (
-          <div className="absolute top-[100px] -right-4 w-8 h-8 bg-pink-500 rounded-full animate-ping" />
-        )}
-      </div>
-
-      {/* 
-        CHROME EXTENSION POPUP PREVIEW (Right Side) 
-        This is the actual JoJo themed requested UI.
-      */}
-      <div className="relative group z-20">
-        
-        {/* Floating Menacing Text purely for aesthetics */}
-        <div className="absolute -top-12 -right-8 text-pink-500 font-black text-4xl animate-menacing z-0 hidden md:block">
-          ゴゴゴゴ
-        </div>
-        <div className="absolute -bottom-8 -left-12 text-yellow-500 font-black text-5xl animate-menacing z-0 hidden md:block" style={{ animationDelay: '1s' }}>
-          ドギャーン
-        </div>
-
-        {/* Extension Container (Simulating the 400x600 extension popup) */}
-        <div className="w-[380px] h-[600px] bg-[#1a0b2e] border-8 border-black flex flex-col relative shadow-[16px_16px_0px_#FF0055] hover:shadow-[20px_20px_0px_#FCD34D] transition-shadow duration-300">
-          
-          {/* Header */}
-          <header className="bg-yellow-400 border-b-8 border-black p-4 relative overflow-hidden z-10 shrink-0">
-            <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIHZhbHVlPSIjZmZmIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9IjAuMiIvPjwvc3ZnPg==')] opacity-20" />
-            <h1 className="text-3xl font-display uppercase tracking-widest text-black flex items-center gap-2 transform -skew-x-12 relative z-10 drop-shadow-[2px_2px_0px_#fff]">
-              <Skull className="w-8 h-8" />
+      <main className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8">
+        <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="label-strip mb-3 inline-flex">AI code explanation and review tool</p>
+            <h1 className="font-display text-5xl uppercase leading-none tracking-[0.08em] sm:text-7xl">
               Code Stand
             </h1>
-          </header>
+            <p className="mt-4 max-w-2xl text-base text-[var(--muted)] sm:text-lg">
+              Paste a snippet, choose what you need, and get a structured breakdown that stays
+              specific to the code instead of drifting into vague advice.
+            </p>
+          </div>
 
-          <div className="flex-1 overflow-y-auto p-5 pb-24 relative flex flex-col gap-6">
-            
-            {/* Status Area */}
-            <div className="bg-black text-white border-4 border-neutral-700 p-3 transform skew-x-[-2deg] font-mono uppercase text-sm font-bold flex justify-between items-center shrink-0">
-              <span className="text-pink-500 flex items-center gap-2">
-                <Activity className={`w-4 h-4 ${appState === 'SCANNING' || appState === 'ANALYZING' ? 'animate-pulse' : ''}`} /> 
-                {appState === 'IDLE' ? 'STANDBY MODE' : 
-                 appState === 'SCANNING' ? 'SEARCHING FOR AURAS...' : 
-                 appState === 'FOUND' ? 'TARGET ACQUIRED' :
-                 appState === 'ANALYZING' ? 'EXECUTING FLURRY...' : 'ANALYSIS COMPLETE' }
-              </span>
-              <span className="text-yellow-500">v1.0.0</span>
+          <div className="panel-surface max-w-sm border-[3px] border-[var(--ink)] p-4 shadow-[8px_8px_0_var(--shadow)]">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full border-[3px] border-[var(--ink)] bg-[var(--accent)]">
+                <Bot className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                  Analysis Engine
+                </p>
+                <p className="font-display text-2xl uppercase tracking-[0.08em]">AI Analyzer</p>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section className="grid flex-1 gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+          <form
+            className="panel-surface flex h-full flex-col border-[4px] border-[var(--ink)] p-5 shadow-[10px_10px_0_var(--shadow)]"
+            onSubmit={handleSubmit}
+          >
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                  Input
+                </p>
+                <h2 className="font-display text-3xl uppercase tracking-[0.08em]">Target Code</h2>
+              </div>
+              <div className="stamp">Precise output</div>
             </div>
 
-            {/* Target Code Block Area */}
-            {(appState === 'FOUND' || appState === 'ANALYZING' || appState === 'DONE') && (
-              <div className="border-4 border-pink-500 bg-pink-950/30 p-4 relative transform translate-x-2 shrink-0 shadow-[4px_4px_0px_#FF0055]">
-                <div className="absolute -top-3 -left-3 bg-pink-500 text-black font-black text-xs px-2 py-1 transform -rotate-6 border-2 border-black">
-                  TARGET LOCK
+            <div className="mb-5 grid gap-3 sm:grid-cols-3">
+              {(Object.entries(MODE_COPY) as Array<[Mode, (typeof MODE_COPY)[Mode]]>).map(
+                ([modeKey, config]) => {
+                  const Icon = config.icon;
+                  const active = mode === modeKey;
+
+                  return (
+                    <button
+                      key={modeKey}
+                      className={`mode-card ${active ? 'mode-card-active' : ''}`}
+                      onClick={() => handleModeChange(modeKey)}
+                      type="button"
+                    >
+                      <Icon className="mb-3 h-5 w-5" />
+                      <span className="font-display text-2xl uppercase tracking-[0.08em]">
+                        {config.label}
+                      </span>
+                      <span className="mt-2 text-sm leading-5 text-[var(--muted)]">
+                        {config.description}
+                      </span>
+                    </button>
+                  );
+                },
+              )}
+            </div>
+
+            <label className="mb-3 block">
+              <span className="mb-2 block font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                What do you want help with?
+              </span>
+              <input
+                className="tool-input"
+                onChange={(event) => setQuestion(event.target.value)}
+                placeholder="Explain the async flow and point out any edge cases."
+                value={question}
+              />
+            </label>
+
+            <label className="flex min-h-0 flex-1 flex-col">
+              <span className="mb-2 block font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                Paste code
+              </span>
+              <textarea
+                className="tool-input min-h-[320px] flex-1 resize-y font-mono text-sm leading-6"
+                onChange={(event) => setCode(event.target.value)}
+                placeholder="Paste JavaScript, TypeScript, Python, Java, SQL, or any other code here."
+                spellCheck={false}
+                value={code}
+              />
+            </label>
+
+            {error ? (
+              <div className="mt-4 flex items-start gap-3 border-[3px] border-[var(--danger)] bg-[var(--danger-soft)] p-3 text-sm">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <p>{error}</p>
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+              <button className="action-button flex-1" disabled={isLoading} type="submit">
+                {isLoading ? (
+                  <>
+                    <LoaderCircle className="h-5 w-5 animate-spin" />
+                    Analyzing
+                  </>
+                ) : (
+                  <>
+                    <ClipboardList className="h-5 w-5" />
+                    Run analysis
+                  </>
+                )}
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => setCode(SAMPLE_CODE)}
+                type="button"
+              >
+                Load sample
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setCode('');
+                  setResult(null);
+                  setError('');
+                }}
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
+          </form>
+
+          <section className="panel-surface flex h-full flex-col border-[4px] border-[var(--ink)] p-5 shadow-[10px_10px_0_var(--shadow)]">
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                  Output
+                </p>
+                <h2 className="font-display text-3xl uppercase tracking-[0.08em]">
+                  Breakdown
+                </h2>
+              </div>
+              <div className="stamp">Structured</div>
+            </div>
+
+            {!result && !isLoading ? (
+              <div className="flex flex-1 flex-col items-center justify-center border-[3px] border-dashed border-[var(--line)] bg-white/60 px-6 py-10 text-center">
+                <CheckCircle2 className="mb-4 h-12 w-12 text-[var(--accent)]" />
+                <p className="font-display text-3xl uppercase tracking-[0.08em]">Ready</p>
+                <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
+                  The result panel will return a concise summary, key behaviors, risky parts,
+                  concrete improvements, and a single recommended next step.
+                </p>
+              </div>
+            ) : null}
+
+            {isLoading ? (
+              <div className="flex flex-1 flex-col items-center justify-center border-[3px] border-dashed border-[var(--line)] bg-white/60 px-6 py-10 text-center">
+                <LoaderCircle className="mb-4 h-12 w-12 animate-spin text-[var(--accent)]" />
+                <p className="font-display text-3xl uppercase tracking-[0.08em]">
+                  Reading the target
+                </p>
+                <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
+                  The backend is generating a structured response so the UI can stay precise.
+                </p>
+              </div>
+            ) : null}
+
+            {result ? (
+              <div className="flex flex-1 flex-col gap-5 overflow-y-auto pr-1">
+                <div className="result-hero">
+                  <p className="font-mono text-xs uppercase tracking-[0.18em] text-white/80">
+                    Summary
+                  </p>
+                  <p className="mt-2 text-base leading-7 text-white">{result.summary}</p>
                 </div>
-                <pre className="text-xs text-pink-200 mt-2 font-mono whitespace-pre-wrap overflow-x-hidden">
-                  {`function debounce(func, wait) {\n  let timeout;\n  return function(...args) {\n    ...`}
-                </pre>
-              </div>
-            )}
 
-            {/* Empty State / Initial Instructions */}
-            {appState === 'IDLE' && (
-              <div className="flex-1 flex flex-col items-center justify-center text-center opacity-70">
-                <Scan className="w-16 h-16 text-yellow-500 mb-4 opacity-50" />
-                <p className="font-bold text-white uppercase tracking-widest font-mono text-lg mb-2">No Target Selected</p>
-                <p className="text-purple-300 text-sm">Activate the stand to scan the current webpage for complex code blocks.</p>
-              </div>
-            )}
-
-            {/* Analysis Output */}
-            {(appState === 'ANALYZING' || appState === 'DONE') && (
-              <div className="mt-4 bg-[#2D0A4E] border-l-4 border-yellow-400 p-4 shrink-0 shadow-lg">
-                <div className="font-mono text-sm text-yellow-100 whitespace-pre-wrap leading-relaxed">
-                  {typedExplanation}
-                  {appState === 'ANALYZING' && <span className="inline-block w-2 h-4 bg-yellow-400 animate-pulse ml-1 align-middle" />}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <article className="result-card">
+                    <p className="section-label">Intent</p>
+                    <p className="mt-2 text-sm leading-6">{result.intent}</p>
+                  </article>
+                  <article className="result-card">
+                    <p className="section-label">Confidence</p>
+                    <p className="mt-2 text-sm uppercase tracking-[0.18em]">{result.confidence}</p>
+                  </article>
                 </div>
+
+                <article className="result-card">
+                  <p className="section-label">What it does</p>
+                  <ul className="result-list">
+                    {result.whatItDoes.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </article>
+
+                <article className="result-card">
+                  <p className="section-label">Important lines</p>
+                  <div className="mt-3 grid gap-3">
+                    {result.importantLines.map((item) => (
+                      <div key={`${item.label}-${item.snippet}`} className="snippet-card">
+                        <p className="font-display text-2xl uppercase tracking-[0.08em]">
+                          {item.label}
+                        </p>
+                        <pre className="mt-2 overflow-x-auto rounded-md bg-[var(--ink)]/95 p-3 text-xs leading-6 text-[var(--paper)]">
+                          <code>{item.snippet}</code>
+                        </pre>
+                        <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{item.why}</p>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <article className="result-card">
+                    <p className="section-label">Risks</p>
+                    <ul className="result-list">
+                      {result.risks.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </article>
+                  <article className="result-card">
+                    <p className="section-label">Improvements</p>
+                    <ul className="result-list">
+                      {result.improvements.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </article>
+                </div>
+
+                <article className="result-card border-[var(--accent)] bg-[var(--accent-soft)]">
+                  <p className="section-label">Recommended next step</p>
+                  <p className="mt-2 text-sm leading-6">{result.nextStep}</p>
+                </article>
               </div>
-            )}
-
-          </div>
-
-          {/* Bottom Action Area */}
-          <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-[#0B0413] via-[#1a0b2e] to-transparent pt-12">
-            <button 
-              onClick={handleAction}
-              disabled={appState === 'SCANNING' || appState === 'ANALYZING'}
-              className={`w-full font-display text-2xl tracking-widest py-4 px-6 border-4 border-black transform transition-all duration-200 font-bold uppercase flex items-center justify-center gap-3 relative overflow-hidden group
-                ${appState === 'IDLE' ? 'bg-yellow-400 text-black hover:bg-yellow-300 hover:skew-x-[-2deg] hover:scale-[1.02] shadow-[6px_6px_0px_#FF0055]' : 
-                  appState === 'SCANNING' ? 'bg-neutral-600 text-neutral-400 cursor-wait' :
-                  appState === 'FOUND' ? 'bg-pink-500 text-white hover:bg-pink-400 hover:-translate-y-1 shadow-[4px_4px_0px_#FCD34D]' :
-                  appState === 'ANALYZING' ? 'bg-purple-600 text-purple-300 italic scale-95' :
-                  'bg-white text-black hover:bg-gray-200 shadow-[6px_6px_0px_#000]'
-                }`}
-            >
-              {/* Action Button Text States */}
-              {appState === 'IDLE' && <><Scan className="w-6 h-6" /> Scan Page</>}
-              {appState === 'SCANNING' && 'Scanning...'}
-              {appState === 'FOUND' && <><Zap className="w-6 h-6 fill-white" /> ORA! (Analyze)</>}
-              {appState === 'ANALYZING' && 'Explaining...'}
-              {appState === 'DONE' && <><ArrowRight className="w-6 h-6" /> Clear Target</>}
-            </button>
-          </div>
-        </div>
-      </div>
+            ) : null}
+          </section>
+        </section>
+      </main>
     </div>
   );
 }

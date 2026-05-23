@@ -1,6 +1,6 @@
 {
-  "name": "Chrome Extension Prompt",
-  "description": "Provides a comprehensive prompt for building an AI-powered Chrome extension coding assistant.",
+  "name": "Code Stand",
+  "description": "A code analysis tool that explains snippets, reviews risks, and suggests improvements.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
