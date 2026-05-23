@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Code Stand",
   "description": "Scan code on the current page and get a precise AI explanation, review, or improvement plan.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["https://generativelanguage.googleapis.com/*"],
   "action": {
