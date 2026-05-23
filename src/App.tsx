@@ -1,17 +1,23 @@
-import type { FormEvent } from 'react';
-import { useState } from 'react';
+import { GoogleGenAI } from '@google/genai';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
-  Bot,
-  CheckCircle2,
-  ClipboardList,
+  Check,
+  KeyRound,
   LoaderCircle,
-  SearchCode,
+  ScanSearch,
   Sparkles,
   WandSparkles,
 } from 'lucide-react';
 
 type Mode = 'explain' | 'review' | 'improve';
+
+type ScanPayload = {
+  code: string;
+  source: string;
+  language: string;
+  url: string;
+};
 
 type AnalysisResult = {
   summary: string;
@@ -28,358 +34,421 @@ type AnalysisResult = {
   nextStep: string;
 };
 
-const SAMPLE_CODE = `export async function fetchUserProfile(userId) {
-  const response = await fetch("/api/users/" + userId);
+const MODEL = 'gemini-2.5-flash';
 
-  if (!response.ok) {
-    return null;
-  }
-
-  const user = await response.json();
-  return {
-    id: user.id,
-    name: user.name.trim(),
-    lastLogin: new Date(user.last_login).toLocaleDateString(),
-  };
-}`;
+const RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'summary',
+    'intent',
+    'confidence',
+    'whatItDoes',
+    'importantLines',
+    'risks',
+    'improvements',
+    'nextStep',
+  ],
+  properties: {
+    summary: { type: 'string' },
+    intent: { type: 'string' },
+    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    whatItDoes: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 2,
+      maxItems: 6,
+    },
+    importantLines: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['label', 'snippet', 'why'],
+        properties: {
+          label: { type: 'string' },
+          snippet: { type: 'string' },
+          why: { type: 'string' },
+        },
+      },
+    },
+    risks: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 1,
+      maxItems: 5,
+    },
+    improvements: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 1,
+      maxItems: 5,
+    },
+    nextStep: { type: 'string' },
+  },
+} as const;
 
 const MODE_COPY: Record<
   Mode,
   {
     label: string;
-    icon: typeof Sparkles;
-    description: string;
     prompt: string;
+    icon: typeof Sparkles;
   }
 > = {
   explain: {
     label: 'Explain',
+    prompt: 'Explain what this code does clearly and precisely.',
     icon: Sparkles,
-    description: 'Break down what the code does in plain language.',
-    prompt: 'Explain the intent and flow clearly. Call out anything non-obvious.',
   },
   review: {
     label: 'Review',
-    icon: SearchCode,
-    description: 'Focus on bugs, edge cases, and risky assumptions.',
-    prompt: 'Review this code like a senior engineer. Be strict and specific.',
+    prompt: 'Review this code for bugs, edge cases, and risky assumptions.',
+    icon: ScanSearch,
   },
   improve: {
     label: 'Improve',
+    prompt: 'Suggest the highest-value improvements for this code.',
     icon: WandSparkles,
-    description: 'Suggest practical changes to make the code cleaner or stronger.',
-    prompt: 'Propose precise improvements with the highest impact first.',
   },
 };
+
+function getActiveTab() {
+  return new Promise<chrome.tabs.Tab>((resolve, reject) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      const tab = tabs[0];
+      if (!tab?.id) {
+        reject(new Error('No active tab found.'));
+        return;
+      }
+
+      resolve(tab);
+    });
+  });
+}
+
+function scanActiveTab() {
+  return new Promise<ScanPayload>((resolve, reject) => {
+    getActiveTab()
+      .then((tab) => {
+        chrome.tabs.sendMessage(tab.id!, { type: 'CODE_STAND_SCAN' }, (response) => {
+          const error = chrome.runtime.lastError;
+          if (error) {
+            reject(
+              new Error(
+                'Could not scan this tab. Try a normal webpage with visible code blocks.',
+              ),
+            );
+            return;
+          }
+
+          if (response?.error) {
+            reject(new Error(response.error));
+            return;
+          }
+
+          resolve(response as ScanPayload);
+        });
+      })
+      .catch(reject);
+  });
+}
+
+function loadApiKey() {
+  return new Promise<string>((resolve) => {
+    chrome.storage.local.get(['geminiApiKey'], (result) => {
+      resolve((result.geminiApiKey as string | undefined) ?? '');
+    });
+  });
+}
+
+function saveApiKey(apiKey: string) {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.set({ geminiApiKey: apiKey }, () => resolve());
+  });
+}
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('explain');
   const [question, setQuestion] = useState(MODE_COPY.explain.prompt);
+  const [apiKey, setApiKey] = useState('');
   const [code, setCode] = useState('');
+  const [source, setSource] = useState('');
+  const [pageUrl, setPageUrl] = useState('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [status, setStatus] = useState('Ready to scan the current tab.');
   const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSavingKey, setIsSavingKey] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  const handleModeChange = (nextMode: Mode) => {
+  useEffect(() => {
+    loadApiKey().then(setApiKey);
+  }, []);
+
+  const changeMode = (nextMode: Mode) => {
     setMode(nextMode);
     setQuestion(MODE_COPY[nextMode].prompt);
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleSaveKey = async () => {
+    setIsSavingKey(true);
+    await saveApiKey(apiKey.trim());
+    setIsSavingKey(false);
+    setStatus('API key saved in local extension storage.');
+  };
 
-    if (!code.trim()) {
-      setError('Paste some code before running the analysis.');
-      return;
-    }
-
-    setIsLoading(true);
+  const handleScan = async () => {
+    setIsScanning(true);
     setError('');
 
     try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const payload = await scanActiveTab();
+      setCode(payload.code);
+      setSource(payload.source);
+      setPageUrl(payload.url);
+      setResult(null);
+      setStatus(`Captured ${payload.source}${payload.language !== 'unknown' ? ` (${payload.language})` : ''}.`);
+    } catch (scanError) {
+      setError(scanError instanceof Error ? scanError.message : 'Scan failed.');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!apiKey.trim()) {
+      setError('Add your Gemini API key first.');
+      return;
+    }
+
+    if (!code.trim()) {
+      setError('Scan a page or paste code before analyzing.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError('');
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+      const prompt = [
+        'You are a precise senior software engineer.',
+        'Use only the supplied code and request.',
+        'Be concise, concrete, and specific.',
+        `Mode: ${mode}`,
+        `Request: ${question.trim() || MODE_COPY[mode].prompt}`,
+        pageUrl ? `Source URL: ${pageUrl}` : '',
+        source ? `Captured from: ${source}` : '',
+        'Code:',
+        code,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const response = await ai.models.generateContent({
+        model: MODEL,
+        contents: prompt,
+        config: {
+          temperature: 0.2,
+          responseMimeType: 'application/json',
+          responseJsonSchema: RESPONSE_SCHEMA,
         },
-        body: JSON.stringify({
-          mode,
-          question,
-          code,
-        }),
       });
 
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? 'The analysis request failed.');
+      if (!response.text) {
+        throw new Error('The model returned an empty response.');
       }
 
-      setResult(payload.analysis as AnalysisResult);
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Something went wrong while contacting the analyzer.';
-
-      setError(message);
-      setResult(null);
+      setResult(JSON.parse(response.text) as AnalysisResult);
+      setStatus(`Analysis complete with ${MODEL}.`);
+    } catch (analyzeError) {
+      setError(analyzeError instanceof Error ? analyzeError.message : 'Analysis failed.');
     } finally {
-      setIsLoading(false);
+      setIsAnalyzing(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
-      <div className="poster-noise pointer-events-none fixed inset-0 opacity-80" />
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(235,94,40,0.18),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(56,82,255,0.16),_transparent_30%)]" />
-
-      <main className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8">
-        <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl">
-            <p className="label-strip mb-3 inline-flex">AI code explanation and review tool</p>
-            <h1 className="font-display text-5xl uppercase leading-none tracking-[0.08em] sm:text-7xl">
-              Code Stand
-            </h1>
-            <p className="mt-4 max-w-2xl text-base text-[var(--muted)] sm:text-lg">
-              Paste a snippet, choose what you need, and get a structured breakdown that stays
-              specific to the code instead of drifting into vague advice.
-            </p>
+    <div className="popup-shell">
+      <div className="popup-panel">
+        <header className="header-strip">
+          <div>
+            <p className="micro-label">Chrome Extension</p>
+            <h1 className="title">Code Stand</h1>
           </div>
-
-          <div className="panel-surface max-w-sm border-[3px] border-[var(--ink)] p-4 shadow-[8px_8px_0_var(--shadow)]">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-full border-[3px] border-[var(--ink)] bg-[var(--accent)]">
-                <Bot className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
-                  Analysis Engine
-                </p>
-                <p className="font-display text-2xl uppercase tracking-[0.08em]">AI Analyzer</p>
-              </div>
-            </div>
-          </div>
+          <div className="version-pill">v1.1</div>
         </header>
 
-        <section className="grid flex-1 gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-          <form
-            className="panel-surface flex h-full flex-col border-[4px] border-[var(--ink)] p-5 shadow-[10px_10px_0_var(--shadow)]"
-            onSubmit={handleSubmit}
-          >
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                  Input
-                </p>
-                <h2 className="font-display text-3xl uppercase tracking-[0.08em]">Target Code</h2>
-              </div>
-              <div className="stamp">Precise output</div>
-            </div>
-
-            <div className="mb-5 grid gap-3 sm:grid-cols-3">
-              {(Object.entries(MODE_COPY) as Array<[Mode, (typeof MODE_COPY)[Mode]]>).map(
-                ([modeKey, config]) => {
-                  const Icon = config.icon;
-                  const active = mode === modeKey;
-
-                  return (
-                    <button
-                      key={modeKey}
-                      className={`mode-card ${active ? 'mode-card-active' : ''}`}
-                      onClick={() => handleModeChange(modeKey)}
-                      type="button"
-                    >
-                      <Icon className="mb-3 h-5 w-5" />
-                      <span className="font-display text-2xl uppercase tracking-[0.08em]">
-                        {config.label}
-                      </span>
-                      <span className="mt-2 text-sm leading-5 text-[var(--muted)]">
-                        {config.description}
-                      </span>
-                    </button>
-                  );
-                },
-              )}
-            </div>
-
-            <label className="mb-3 block">
-              <span className="mb-2 block font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                What do you want help with?
-              </span>
-              <input
-                className="tool-input"
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder="Explain the async flow and point out any edge cases."
-                value={question}
-              />
-            </label>
-
-            <label className="flex min-h-0 flex-1 flex-col">
-              <span className="mb-2 block font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                Paste code
-              </span>
-              <textarea
-                className="tool-input min-h-[320px] flex-1 resize-y font-mono text-sm leading-6"
-                onChange={(event) => setCode(event.target.value)}
-                placeholder="Paste JavaScript, TypeScript, Python, Java, SQL, or any other code here."
-                spellCheck={false}
-                value={code}
-              />
-            </label>
-
-            {error ? (
-              <div className="mt-4 flex items-start gap-3 border-[3px] border-[var(--danger)] bg-[var(--danger-soft)] p-3 text-sm">
-                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
-                <p>{error}</p>
-              </div>
-            ) : null}
-
-            <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-              <button className="action-button flex-1" disabled={isLoading} type="submit">
-                {isLoading ? (
-                  <>
-                    <LoaderCircle className="h-5 w-5 animate-spin" />
-                    Analyzing
-                  </>
-                ) : (
-                  <>
-                    <ClipboardList className="h-5 w-5" />
-                    Run analysis
-                  </>
-                )}
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => setCode(SAMPLE_CODE)}
-                type="button"
-              >
-                Load sample
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  setCode('');
-                  setResult(null);
-                  setError('');
-                }}
-                type="button"
-              >
-                Clear
-              </button>
-            </div>
-          </form>
-
-          <section className="panel-surface flex h-full flex-col border-[4px] border-[var(--ink)] p-5 shadow-[10px_10px_0_var(--shadow)]">
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
-                  Output
-                </p>
-                <h2 className="font-display text-3xl uppercase tracking-[0.08em]">
-                  Breakdown
-                </h2>
-              </div>
-              <div className="stamp">Structured</div>
-            </div>
-
-            {!result && !isLoading ? (
-              <div className="flex flex-1 flex-col items-center justify-center border-[3px] border-dashed border-[var(--line)] bg-white/60 px-6 py-10 text-center">
-                <CheckCircle2 className="mb-4 h-12 w-12 text-[var(--accent)]" />
-                <p className="font-display text-3xl uppercase tracking-[0.08em]">Ready</p>
-                <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
-                  The result panel will return a concise summary, key behaviors, risky parts,
-                  concrete improvements, and a single recommended next step.
-                </p>
-              </div>
-            ) : null}
-
-            {isLoading ? (
-              <div className="flex flex-1 flex-col items-center justify-center border-[3px] border-dashed border-[var(--line)] bg-white/60 px-6 py-10 text-center">
-                <LoaderCircle className="mb-4 h-12 w-12 animate-spin text-[var(--accent)]" />
-                <p className="font-display text-3xl uppercase tracking-[0.08em]">
-                  Reading the target
-                </p>
-                <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)]">
-                  The backend is generating a structured response so the UI can stay precise.
-                </p>
-              </div>
-            ) : null}
-
-            {result ? (
-              <div className="flex flex-1 flex-col gap-5 overflow-y-auto pr-1">
-                <div className="result-hero">
-                  <p className="font-mono text-xs uppercase tracking-[0.18em] text-white/80">
-                    Summary
-                  </p>
-                  <p className="mt-2 text-base leading-7 text-white">{result.summary}</p>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <article className="result-card">
-                    <p className="section-label">Intent</p>
-                    <p className="mt-2 text-sm leading-6">{result.intent}</p>
-                  </article>
-                  <article className="result-card">
-                    <p className="section-label">Confidence</p>
-                    <p className="mt-2 text-sm uppercase tracking-[0.18em]">{result.confidence}</p>
-                  </article>
-                </div>
-
-                <article className="result-card">
-                  <p className="section-label">What it does</p>
-                  <ul className="result-list">
-                    {result.whatItDoes.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-card">
-                  <p className="section-label">Important lines</p>
-                  <div className="mt-3 grid gap-3">
-                    {result.importantLines.map((item) => (
-                      <div key={`${item.label}-${item.snippet}`} className="snippet-card">
-                        <p className="font-display text-2xl uppercase tracking-[0.08em]">
-                          {item.label}
-                        </p>
-                        <pre className="mt-2 overflow-x-auto rounded-md bg-[var(--ink)]/95 p-3 text-xs leading-6 text-[var(--paper)]">
-                          <code>{item.snippet}</code>
-                        </pre>
-                        <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{item.why}</p>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <article className="result-card">
-                    <p className="section-label">Risks</p>
-                    <ul className="result-list">
-                      {result.risks.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </article>
-                  <article className="result-card">
-                    <p className="section-label">Improvements</p>
-                    <ul className="result-list">
-                      {result.improvements.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </article>
-                </div>
-
-                <article className="result-card border-[var(--accent)] bg-[var(--accent-soft)]">
-                  <p className="section-label">Recommended next step</p>
-                  <p className="mt-2 text-sm leading-6">{result.nextStep}</p>
-                </article>
-              </div>
-            ) : null}
-          </section>
+        <section className="section-block">
+          <div className="section-title-row">
+            <span className="section-label">Gemini API key</span>
+            <KeyRound className="h-4 w-4" />
+          </div>
+          <div className="key-row">
+            <input
+              className="tool-input"
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder="Paste your Gemini API key"
+              type="password"
+              value={apiKey}
+            />
+            <button className="mini-button" onClick={handleSaveKey} type="button">
+              {isSavingKey ? '...' : 'Save'}
+            </button>
+          </div>
         </section>
-      </main>
+
+        <section className="section-block">
+          <div className="mode-grid">
+            {(Object.entries(MODE_COPY) as Array<[Mode, (typeof MODE_COPY)[Mode]]>).map(
+              ([modeKey, config]) => {
+                const Icon = config.icon;
+                return (
+                  <button
+                    key={modeKey}
+                    className={`mode-card ${mode === modeKey ? 'mode-card-active' : ''}`}
+                    onClick={() => changeMode(modeKey)}
+                    type="button"
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span>{config.label}</span>
+                  </button>
+                );
+              },
+            )}
+          </div>
+
+          <textarea
+            className="tool-input prompt-box"
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder="Optional: ask for a more specific explanation."
+            spellCheck={false}
+            value={question}
+          />
+        </section>
+
+        <section className="section-block">
+          <div className="section-title-row">
+            <span className="section-label">Current page code</span>
+            <button className="mini-button" onClick={handleScan} type="button">
+              {isScanning ? (
+                <>
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  Scanning
+                </>
+              ) : (
+                <>
+                  <ScanSearch className="h-4 w-4" />
+                  Scan tab
+                </>
+              )}
+            </button>
+          </div>
+          <p className="status-line">{status}</p>
+          {source ? <p className="source-line">{source}</p> : null}
+          <textarea
+            className="tool-input code-box"
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="Scan a page or paste code here manually."
+            spellCheck={false}
+            value={code}
+          />
+        </section>
+
+        {error ? (
+          <div className="error-box">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        ) : null}
+
+        <button className="action-button" onClick={handleAnalyze} type="button">
+          {isAnalyzing ? (
+            <>
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              Analyzing
+            </>
+          ) : (
+            <>
+              <Sparkles className="h-4 w-4" />
+              Analyze code
+            </>
+          )}
+        </button>
+
+        {result ? (
+          <section className="result-panel">
+            <article className="result-card hero-card">
+              <p className="section-label">Summary</p>
+              <p className="result-copy">{result.summary}</p>
+            </article>
+
+            <article className="result-card">
+              <p className="section-label">Intent</p>
+              <p className="result-copy">{result.intent}</p>
+            </article>
+
+            <article className="result-card">
+              <p className="section-label">What it does</p>
+              <ul className="result-list">
+                {result.whatItDoes.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="result-card">
+              <p className="section-label">Important lines</p>
+              <div className="snippet-list">
+                {result.importantLines.map((item) => (
+                  <div key={`${item.label}-${item.snippet}`} className="snippet-card">
+                    <p className="snippet-title">{item.label}</p>
+                    <pre className="snippet-pre">
+                      <code>{item.snippet}</code>
+                    </pre>
+                    <p className="result-copy">{item.why}</p>
+                  </div>
+                ))}
+              </div>
+            </article>
+
+            <article className="result-card">
+              <p className="section-label">Risks</p>
+              <ul className="result-list">
+                {result.risks.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="result-card">
+              <p className="section-label">Improvements</p>
+              <ul className="result-list">
+                {result.improvements.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="result-card next-step-card">
+              <div className="section-title-row">
+                <span className="section-label">Next step</span>
+                <Check className="h-4 w-4" />
+              </div>
+              <p className="result-copy">{result.nextStep}</p>
+            </article>
+          </section>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -1,164 +1,93 @@
 # Code Stand
 
-Code Stand is a small full-stack code analysis app. Paste a code snippet, choose a mode, and get a structured response that explains the code, reviews it for issues, or suggests practical improvements.
+Code Stand is a Chrome extension popup that scans code from the current tab and sends it to Gemini for a precise explanation, review, or improvement pass.
+
+## What it is
+
+- A real Chrome extension, not a standalone web app
+- A popup UI built with React and Vite
+- A content script that reads selected code or the largest visible `pre` or `code` block on the page
+- A client-side Gemini integration that uses your own API key stored in Chrome local extension storage
 
 ## Features
 
-- `Explain` mode for plain-language breakdowns
-- `Review` mode for bugs, edge cases, and risky assumptions
-- `Improve` mode for concrete cleanup and refactor suggestions
-- Structured output with summary, intent, important lines, risks, and next step
-- React frontend with an Express API backend
-
-## Tech stack
-
-- React 19
-- Vite
-- Express
-- Gemini API via `@google/genai`
-- Tailwind CSS v4
+- `Explain` mode for understanding code flow
+- `Review` mode for bugs, edge cases, and risky logic
+- `Improve` mode for cleanup and refactor suggestions
+- Page scan for code blocks on the active tab
+- Manual paste fallback if the page scan is not enough
 
 ## Project structure
 
 ```text
-src/
-  App.tsx        Frontend UI
-  main.tsx       React entry point
-  index.css      App styling
-server.js        Express API server
-vite.config.ts   Vite config and API proxy
+public/manifest.json   Chrome extension manifest
+src/App.tsx            Popup UI and Gemini analysis flow
+src/content.ts         Content script that extracts code from the page
+src/index.css          Popup styling
+index.html             Popup entry
+vite.config.ts         Vite build config for popup + content script
 ```
 
 ## Requirements
 
 - Node.js 20 or later
-- A valid Gemini API key
+- Google Chrome or a Chromium-based browser
+- A Gemini API key
 
-## Installation
+## Install dependencies
 
 ```bash
 npm install
 ```
 
-## Environment setup
-
-Create a `.env.local` file in the project root:
-
-```bash
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-API_PORT=3001
-PORT=3001
-```
-
-### Environment variables
-
-- `GEMINI_API_KEY`: Required. Used by the backend to call Gemini.
-- `GEMINI_MODEL`: Optional. Defaults to `gemini-2.5-flash`.
-- `API_PORT`: Optional. Port for the Express API.
-- `PORT`: Optional fallback for the API port.
-
-## Run locally
-
-Start both the frontend and backend:
-
-```bash
-npm run dev
-```
-
-Services:
-
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:3001`
-
-The Vite app proxies `/api/*` requests to the backend automatically.
-
-## Production
-
-Build the frontend:
+## Build the extension
 
 ```bash
 npm run build
 ```
 
-Start the server:
+This creates the unpacked extension output in `dist/`.
+
+## Development
 
 ```bash
-npm start
+npm run dev
 ```
 
-When `dist/` exists, the Express server serves both the built frontend and the API.
+This runs Vite in watch mode and rebuilds the extension files when you change the source.
 
-## Available scripts
+## Load in Chrome
 
-- `npm run dev` - run frontend and backend together
-- `npm run dev:client` - run only the Vite frontend
-- `npm run dev:server` - run only the Express backend
-- `npm run build` - build the frontend
-- `npm run preview` - preview the built frontend
-- `npm run start` - start the backend server
-- `npm run lint` - run TypeScript type checking
+1. Open `chrome://extensions`
+2. Enable `Developer mode`
+3. Click `Load unpacked`
+4. Select the `dist/` folder from this project
+5. Pin the extension if you want quick access
 
-## API
+After code changes:
 
-### `GET /api/health`
-
-Returns backend status and whether the Gemini API key is configured.
-
-Example response:
-
-```json
-{
-  "ok": true,
-  "configured": true,
-  "model": "gemini-2.5-flash"
-}
-```
-
-### `POST /api/analyze`
-
-Request body:
-
-```json
-{
-  "mode": "explain",
-  "question": "Explain the async flow clearly.",
-  "code": "const value = await fetchData();"
-}
-```
-
-Supported modes:
-
-- `explain`
-- `review`
-- `improve`
-
-The backend returns structured JSON for the UI to render.
+1. Run `npm run build` or keep `npm run dev` running
+2. Go back to `chrome://extensions`
+3. Click the refresh icon on the loaded extension
 
 ## How to use
 
-1. Start the app with `npm run dev`.
-2. Open `http://localhost:3000`.
-3. Choose `Explain`, `Review`, or `Improve`.
-4. Paste your code.
-5. Add an optional prompt for more specific analysis.
-6. Run the analysis.
+1. Open a webpage containing code
+2. Click the Code Stand extension icon
+3. Paste your Gemini API key and save it
+4. Click `Scan tab`
+5. Choose `Explain`, `Review`, or `Improve`
+6. Click `Analyze code`
 
-## Troubleshooting
+If the page scan does not capture the right code, paste code manually into the popup and analyze it from there.
 
-### Analysis fails immediately
+## Permissions
 
-Check that `.env.local` exists and contains a valid `GEMINI_API_KEY`.
-
-### Frontend loads but analysis does not work
-
-Confirm the backend is running on port `3001` and that `/api/health` responds.
-
-### Port conflict
-
-Change `API_PORT` in `.env.local`, then update the proxy target in [vite.config.ts](/E:/FUN/jojocoding-/vite.config.ts) if needed.
+- `activeTab`: needed to scan the current page
+- `storage`: needed to save your Gemini API key locally
 
 ## Notes
 
-- The app is only as precise as the code snippet you provide. Incomplete snippets may produce lower-confidence results.
-- The Gemini key is used only on the server side. It should not be exposed in frontend code.
+- The API key is stored in Chrome extension local storage on your machine.
+- Some browser pages cannot be scanned, including many Chrome internal pages such as `chrome://extensions`.
+- The extension prefers selected text first. If you highlight a specific code snippet before opening the popup, that selection is used.

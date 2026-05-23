@@ -10,13 +10,16 @@ export default defineConfig({
       '@': path.resolve(__dirname, '.'),
     },
   },
-  server: {
-    host: '0.0.0.0',
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
+  build: {
+    rollupOptions: {
+      input: {
+        popup: path.resolve(__dirname, 'index.html'),
+        content: path.resolve(__dirname, 'src/content.ts'),
+      },
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name].[ext]',
       },
     },
   },
